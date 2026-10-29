@@ -1,0 +1,30 @@
+process.env.NODE_ENV = 'test'; process.env.DB_FILE = ':memory:';
+const test = require('node:test'), assert = require('node:assert');
+const app = require('./server');
+let base, cookie = '', csrf;
+test.before(async () => { await new Promise(r => { const s = app.listen(0, () => { base = 'http://localhost:' + s.address().port; app.s = s; r(); }); }); });
+test.after(() => { app.s.closeAllConnections(); app.s.close(); });
+const call = async (m, u, b, c = cookie, t = csrf) => {
+  const r = await fetch(base + '/api' + u, { method: m, headers: { 'Content-Type': 'application/json', cookie: c, 'x-csrf-token': t || '' }, body: b ? JSON.stringify(b) : undefined });
+  const sc = r.headers.get('set-cookie'); if (sc && c === cookie) cookie = sc.split(';')[0];
+  return { s: r.status, d: await r.json() };
+};
+const reg = (n, e) => ({ full_name: 'Test ' + n, username: n, email: e, password: 'Passw0rd1', confirm_password: 'Passw0rd1' });
+test('full flow', async () => {
+  csrf = (await call('GET', '/csrf')).d.csrf;
+  assert.equal((await call('GET', '/posts')).s, 401);
+  assert.equal((await call('POST', '/auth/register', reg('alice', 'a@x.io'), cookie, 'bad')).s, 403);
+  assert.equal((await call('POST', '/auth/register', reg('alice', 'a@x.io'))).s, 201);
+  assert.equal((await call('POST', '/auth/register', reg('alice', 'b@x.io'))).s, 409);
+  const p = (await call('POST', '/posts', { content: 'hi' })).d.post;
+  assert.equal(p.like_count, 0);
+  await call('POST', `/posts/${p.id}/like`); const l = await call('POST', `/posts/${p.id}/like`);
+  assert.equal(l.d.post.like_count, 1);
+  assert.equal((await call('DELETE', `/posts/${p.id}/like`)).d.post.like_count, 0);
+  assert.equal((await call('POST', `/posts/${p.id}/comments`, { content: '  ' })).s, 400);
+  assert.equal((await call('POST', `/posts/${p.id}/comments`, { content: 'yo' })).d.post.comment_count, 1);
+  assert.equal((await call('POST', '/users/1/follow')).s, 400);
+  assert.equal((await call('GET', '/posts/abc')).s, 400);
+  assert.equal((await call('GET', '/posts/999')).s, 404);
+  assert.equal((await call('DELETE', `/posts/${p.id}`)).s, 200);
+});
